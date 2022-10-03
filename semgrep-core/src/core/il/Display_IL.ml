@@ -7,7 +7,7 @@ let string_of_base base =
   | Mem _ -> "<Mem>"
 
 let string_of_offset offset =
-  match offset with
+  match offset.o with
   | Dot a -> str_of_name a
   | Index _ -> "[...]"
 

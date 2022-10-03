@@ -357,7 +357,7 @@ let handle_taint_propagators env x taints =
   let propagate_froms, propagate_tos =
     List.partition (fun p -> p.spec.kind = `From) propagators
   in
-  let var_env =
+  let lval_env =
     (* `x` is the source (the "from") of propagation, we add its taints to
      * the environment. *)
     List.fold_left
@@ -378,17 +378,19 @@ let handle_taint_propagators env x taints =
       Taints.empty propagate_tos
   in
   let taints = Taints.union taints taints_incoming in
-  let var_env =
+  let lval_env =
     match x with
     | `Var var ->
         (* If `x` is a variable, then taint is propagated by side-effect. This
          * allows us to e.g. propagate taint from `x` to `y` in `f(x,y)`. *)
-        Lval_env.add_var var taints_incoming var_env
+        Lval_env.add_var var taints_incoming lval_env
+    | `Exp { e = Fetch lval; _ } when LV.lval_is_var_and_dots lval ->
+        Lval_env.add lval taints_incoming lval_env
     | `Exp _
     | `Ins _ ->
-        var_env
+        lval_env
   in
-  (taints, var_env)
+  (taints, lval_env)
 
 (* coupling: check_tainted_var *)
 let check_tainted_tok env tok =
@@ -458,40 +460,45 @@ let check_tainted_var env (var : IL.name) : Taints.t * Lval_env.t =
       report_findings env findings;
       (taints, lval_env')
 
-(* Test whether an expression is tainted, and if it is also a sink,
- * report the finding too (by side effect). *)
-let rec check_tainted_expr env exp : Taints.t * Lval_env.t =
-  let check env = check_tainted_expr env in
+let rec check_tainted_lval env (lval : IL.lval) : Taints.t * Lval_env.t =
   let check_base env = function
     | Var var -> check_tainted_var env var
     | VarSpecial (_, tok) -> check_tainted_tok env tok
-    | Mem e -> check env e
+    | Mem e -> check_tainted_expr env e
   in
-  let check_offset env = function
-    | Index e -> check env e
+  let check_offset env offset =
+    match offset.o with
+    | Index e -> check_tainted_expr env e
     | Dot fld -> check_tainted_tok env (snd fld.ident)
   in
+  match lval with
+  | { base; rev_offset; _ } -> (
+      let lval_info =
+        match Lval_env.find lval env.lval_env with
+        | `Clean -> `Clean
+        | `None -> `Tainted Taints.empty
+        | `Tainted taints -> `Tainted taints
+      in
+      match lval_info with
+      | `Clean -> (Taints.empty, env.lval_env)
+      | `Tainted taints ->
+          (* If not explicitly marked clean, then we look for taint in the
+              base and offsets separately... THINK: Should we? *)
+          let base_taints, lval_env = check_base env base in
+          let offset_taints, lval_env =
+            union_map_taints_and_vars { env with lval_env } check_offset
+              rev_offset
+          in
+          ( Taints.union taints (Taints.union base_taints offset_taints),
+            lval_env ))
+
+(* Test whether an expression is tainted, and if it is also a sink,
+ * report the finding too (by side effect). *)
+and check_tainted_expr env exp : Taints.t * Lval_env.t =
+  let check env = check_tainted_expr env in
   let check_subexpr exp =
     match exp.e with
-    | Fetch ({ base; rev_offset; _ } as lval) -> (
-        let lval_info =
-          match Lval_env.find lval env.lval_env with
-          | `Clean -> `Clean
-          | `None -> `Tainted Taints.empty
-          | `Tainted taints -> `Tainted taints
-        in
-        match lval_info with
-        | `Clean -> (Taints.empty, env.lval_env)
-        | `Tainted taints ->
-            (* If not explicitly marked clean, then we look for taint in the
-               base and offsets separately... THINK: Should we? *)
-            let base_taints, lval_env = check_base env base in
-            let offset_taints, lval_env =
-              union_map_taints_and_vars { env with lval_env } check_offset
-                rev_offset
-            in
-            ( Taints.union taints (Taints.union base_taints offset_taints),
-              lval_env ))
+    | Fetch lval -> check_tainted_lval env lval
     | FixmeExp (_, _, Some e) -> check env e
     | Literal _
     | FixmeExp (_, _, None) ->
@@ -551,7 +558,11 @@ let check_function_signature env fun_exp args_taints =
                    (* Case `$F()` *)
                    | { base = Var { ident; _ }; rev_offset = []; _ }
                    (* Case `$X. ... .$F()` *)
-                   | { base = _; rev_offset = Dot { ident; _ } :: _; _ } ->
+                   | {
+                       base = _;
+                       rev_offset = { o = Dot { ident; _ }; _ } :: _;
+                       _;
+                     } ->
                        Some ident
                    | _ -> None
                  in
