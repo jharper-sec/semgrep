@@ -317,15 +317,19 @@ let find_args_taints args_taints fdef =
 (* Tainted *)
 (*****************************************************************************)
 
-let sanitize_var lval_env sanitizer_pms var =
-  let var_is_now_safe =
-    (* If the variable is an exact match (overlap > 0.99) for a sanitizer
-       * annotation, then we infer that the variable itself has been updated
-       * (presumably by side-effect) and is no longer tainted. We will update
-       * the environment (i.e., `var_env') accordingly. *)
+let sanitize_lval lval_env sanitizer_pms lval =
+  let lval_is_now_safe =
+    (* If the l-value is an exact match (overlap > 0.99) for a sanitizer
+     * annotation, then we infer that the l-value itself has been updated
+     * (presumably by side-effect) and is no longer tainted. We will update
+     * the environment (i.e., `lval_env') accordingly. *)
     List.exists (fun x -> x.overlap > 0.99) sanitizer_pms
   in
-  if var_is_now_safe then Lval_env.clean_var var lval_env else lval_env
+  if lval_is_now_safe then
+    match lval with
+    | `Var var -> Lval_env.clean_var var lval_env
+    | `Lval lval -> Lval_env.clean lval lval_env
+  else lval_env
 
 (* Check if an expression is sanitized, if so, return a new variable environment. *)
 let exp_is_sanitized env exp =
@@ -333,8 +337,8 @@ let exp_is_sanitized env exp =
   | [] -> None
   | sanitizer_pms -> (
       match exp.e with
-      | Fetch { base = Var var; rev_offset = [] } ->
-          Some (sanitize_var env.lval_env sanitizer_pms var)
+      | Fetch lval when LV.lval_is_var_and_dots lval ->
+          Some (sanitize_lval env.lval_env sanitizer_pms (`Lval lval))
       | _ -> Some env.lval_env)
 
 let handle_taint_propagators env x taints =
@@ -429,7 +433,7 @@ let check_tainted_var env (var : IL.name) : Taints.t * Lval_env.t =
   match sanitizer_pms with
   (* TODO: We should check that taint and sanitizer(s) are unifiable. *)
   | _ :: _ ->
-      let lval_env' = sanitize_var env.lval_env sanitizer_pms var in
+      let lval_env' = sanitize_lval env.lval_env sanitizer_pms (`Var var) in
       (Taints.empty, lval_env')
   | [] ->
       let mut_source_pms, reg_source_pms =
@@ -518,9 +522,9 @@ and check_tainted_expr env exp : Taints.t * Lval_env.t =
     | Cast (_, e) -> check env e
   in
   match exp_is_sanitized env exp with
-  | Some var_env ->
+  | Some lval_env ->
       (* TODO: We should check that taint and sanitizer(s) are unifiable. *)
-      (Taints.empty, var_env)
+      (Taints.empty, lval_env)
   | None ->
       let sinks =
         orig_is_sink env.config exp.eorig |> Common.map trace_of_match
