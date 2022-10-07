@@ -234,8 +234,7 @@ let findings_of_tainted_return taints return_tok : T.finding list =
          | T.Arg i -> T.ArgToReturn (i, tokens, return_tok)
          | T.Src src -> T.SrcToReturn (src, tokens, return_tok))
 
-let union_taints_filtering_labels ~new_ curr =
-  let labels = labels_in_taint curr in
+let filter_taints_by_labels labels taints =
   Taints.fold
     (fun new_taint taints ->
       match new_taint.orig with
@@ -244,7 +243,12 @@ let union_taints_filtering_labels ~new_ curr =
           let _, ts = T.pm_of_trace src in
           let req = eval_label_requires ~labels ts.source_requires in
           if req then Taints.add new_taint taints else taints)
-    new_ curr
+    taints Taints.empty
+
+let union_taints_filtering_labels ~new_ curr =
+  let labels = labels_in_taint curr in
+  let new_filtered = filter_taints_by_labels labels new_ in
+  Taints.union new_filtered curr
 
 let find_args_taints args_taints fdef =
   let pos_args_taints, named_args_taints =
@@ -381,7 +385,6 @@ let handle_taint_propagators env x taints =
         Taints.union taints_in_acc taints_strid)
       Taints.empty propagate_tos
   in
-  let taints = Taints.union taints taints_incoming in
   let lval_env =
     match x with
     | `Var var ->
@@ -394,7 +397,7 @@ let handle_taint_propagators env x taints =
     | `Ins _ ->
         lval_env
   in
-  (taints, lval_env)
+  (taints_incoming, lval_env)
 
 (* coupling: check_tainted_var *)
 let check_tainted_tok env tok =
@@ -454,11 +457,12 @@ let check_tainted_var env (var : IL.name) : Taints.t * Lval_env.t =
       let taints : Taints.t =
         taints_var_env |> union_taints_filtering_labels ~new_:taints_sources
       in
-      let taints, lval_env' =
+      let taints_propagated, lval_env' =
         handle_taint_propagators
           { env with lval_env = lval_env' }
           (`Var var) taints
       in
+      let taints = Taints.union taints taints_propagated in
       let sinks = sink_pms |> Common.map trace_of_match in
       let findings = findings_of_tainted_sinks env taints sinks in
       report_findings env findings;
@@ -536,9 +540,10 @@ and check_tainted_expr env exp : Taints.t * Lval_env.t =
       let taints =
         taints_exp |> union_taints_filtering_labels ~new_:taints_sources
       in
-      let taints, var_env =
+      let taints_propagated, var_env =
         handle_taint_propagators { env with lval_env } (`Exp exp) taints
       in
+      let taints = Taints.union taints taints_propagated in
       let findings = findings_of_tainted_sinks env taints sinks in
       report_findings env findings;
       (taints, var_env)
@@ -649,11 +654,12 @@ let check_tainted_instr env instr : Taints.t * Lval_env.t =
       let taints =
         taints_instr |> union_taints_filtering_labels ~new_:taint_sources
       in
-      let taints, lval_env' =
+      let taints_propagated, lval_env' =
         handle_taint_propagators
           { env with lval_env = lval_env' }
           (`Ins instr) taints
       in
+      let taints = Taints.union taints taints_propagated in
       let findings = findings_of_tainted_sinks env taints sinks in
       report_findings env findings;
       (taints, lval_env')
