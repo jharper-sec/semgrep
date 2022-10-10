@@ -481,7 +481,7 @@ let check_tainted_var env (var : IL.name) : Taints.t * Lval_env.t =
       report_findings env findings;
       (taints, lval_env')
 
-let check_tainted_lval env (lval : IL.lval) : Taints.t * Lval_env.t =
+let check_tainted_lval env (lval0 : IL.lval) : Taints.t * Lval_env.t =
   let rec loop l =
     logger#flash "check-lval/loop: %s" (Display_IL.string_of_lval l);
     match lval_is_sanitized env.config l with
@@ -512,7 +512,13 @@ let check_tainted_lval env (lval : IL.lval) : Taints.t * Lval_env.t =
         in
         let taints_sources_reg = reg_source_pms |> taints_of_matches
         and taints_sources_mut = mut_source_pms |> taints_of_matches in
-        let lval_env = Lval_env.add lval taints_sources_mut lval_env in
+        logger#flash "check-lval/loop(%s): taint from sources/mut: %s"
+          (Display_IL.string_of_lval l)
+          (Taint.show_taints taints_sources_mut);
+        let lval_env = Lval_env.add l taints_sources_mut lval_env in
+        logger#flash "check-lval/loop(%s): lval_env.1: %s"
+          (Display_IL.string_of_lval l)
+          (Lval_env.to_string Taint.show_taints lval_env);
         let from_env = Lval_env.find l lval_env in
         let taints_from_env =
           match from_env with
@@ -536,6 +542,9 @@ let check_tainted_lval env (lval : IL.lval) : Taints.t * Lval_env.t =
           handle_taint_propagators { env with lval_env } (`Exp e)
             (Taints.union taints_from_env taints_from_sources)
         in
+        logger#flash "check-lval/loop(%s): lval_env.2: %s"
+          (Display_IL.string_of_lval l)
+          (Lval_env.to_string Taint.show_taints lval_env);
         let taints_incoming =
           Taints.union taints_from_sources taints_propagated
         in
@@ -562,22 +571,25 @@ let check_tainted_lval env (lval : IL.lval) : Taints.t * Lval_env.t =
         | `Tainted (ts, te, _), `Tainted ts2 ->
             `Tainted (ts, Taints.union te ts2, lval_env))
   in
-  match loop lval with
+  match loop lval0 with
   | `Sanitized lval_env -> (Taints.empty, lval_env)
   | `Tainted (ts1, ts2, lval_env) ->
+      logger#flash "check-lval(%s): lval_env.out: %s"
+        (Display_IL.string_of_lval lval0)
+        (Lval_env.to_string Taint.show_taints lval_env);
       logger#flash "check-lval(%s): taint from sources: %s"
-        (Display_IL.string_of_lval lval)
+        (Display_IL.string_of_lval lval0)
         (Taint.show_taints ts1);
       logger#flash "check-lval(%s): taint from env: %s"
-        (Display_IL.string_of_lval lval)
+        (Display_IL.string_of_lval lval0)
         (Taint.show_taints ts2);
       let taints = Taints.union ts1 ts2 in
       let sinks =
         (* Should we continue allowing sub-lvalues to be *)
-        lval_is_sink env.config lval |> Common.map trace_of_match
+        lval_is_sink env.config lval0 |> Common.map trace_of_match
       in
       logger#flash "check-lval(%s): sink matches: %d"
-        (Display_IL.string_of_lval lval)
+        (Display_IL.string_of_lval lval0)
         (List.length sinks);
       let findings = findings_of_tainted_sinks env taints sinks in
       report_findings env findings;
