@@ -539,7 +539,11 @@ let check_tainted_lval env (lval : IL.lval) : Taints.t * Lval_env.t =
         let taints_incoming =
           Taints.union taints_from_sources taints_propagated
         in
-        let sinks = lval_is_sink env.config l |> Common.map trace_of_match in
+        let sinks =
+          lval_is_sink env.config l
+          |> List.filter (fun x -> x.overlap > 0.99)
+          |> Common.map trace_of_match
+        in
         logger#flash "check-lval/loop(%s): sink matches: %d"
           (Display_IL.string_of_lval l)
           (List.length sinks);
@@ -567,7 +571,17 @@ let check_tainted_lval env (lval : IL.lval) : Taints.t * Lval_env.t =
       logger#flash "check-lval(%s): taint from env: %s"
         (Display_IL.string_of_lval lval)
         (Taint.show_taints ts2);
-      (Taints.union ts1 ts2, lval_env)
+      let taints = Taints.union ts1 ts2 in
+      let sinks =
+        (* Should we continue allowing sub-lvalues to be *)
+        lval_is_sink env.config lval |> Common.map trace_of_match
+      in
+      logger#flash "check-lval(%s): sink matches: %d"
+        (Display_IL.string_of_lval lval)
+        (List.length sinks);
+      let findings = findings_of_tainted_sinks env taints sinks in
+      report_findings env findings;
+      (taints, lval_env)
 
 (* Test whether an expression is tainted, and if it is also a sink,
  * report the finding too (by side effect). *)
