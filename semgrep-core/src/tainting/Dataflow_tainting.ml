@@ -590,10 +590,13 @@ let rec check_tainted_lval env (lval0 : IL.lval) : Taints.t * Lval_env.t =
               (* better just do not compute taint from env then, that is more consistent *)
               `Sanitized lval_env
             else `Tainted (taints_incoming, Taints.empty, lval_env)
-        | `Tainted (ts, _te, _), `Clean -> `Tainted (ts, Taints.empty, lval_env)
-        | `Tainted (ts, te, _), `None -> `Tainted (ts, te, lval_env)
+        | `Tainted (ts, _te, _), `Clean ->
+            `Tainted (Taints.union ts taints_incoming, Taints.empty, lval_env)
+        | `Tainted (ts, te, _), `None ->
+            `Tainted (Taints.union ts taints_incoming, te, lval_env)
         | `Tainted (ts, te, _), `Tainted ts2 ->
-            `Tainted (ts, Taints.union te ts2, lval_env))
+            `Tainted
+              (Taints.union ts taints_incoming, Taints.union te ts2, lval_env))
   in
   match loop lval0 with
   | `Sanitized lval_env -> (Taints.empty, lval_env)
