@@ -413,7 +413,7 @@ let handle_taint_propagators env x taints =
   (taints_incoming, lval_env)
 
 (* coupling: check_tainted_var *)
-let _check_tainted_tok env tok =
+let check_tainted_tok env tok =
   let source_pms, sanitizer_pms, sink_pms =
     if Parse_info.is_origintok tok then
       ( env.config.is_source (G.Tk tok),
@@ -481,7 +481,7 @@ let check_tainted_var env (var : IL.name) : Taints.t * Lval_env.t =
       report_findings env findings;
       (taints, lval_env')
 
-let check_tainted_lval env (lval0 : IL.lval) : Taints.t * Lval_env.t =
+let rec check_tainted_lval env (lval0 : IL.lval) : Taints.t * Lval_env.t =
   let rec loop l =
     logger#flash "check-lval/loop: %s" (Display_IL.string_of_lval l);
     match lval_is_sanitized env.config l with
@@ -491,8 +491,11 @@ let check_tainted_lval env (lval0 : IL.lval) : Taints.t * Lval_env.t =
     | [] -> (
         let sub =
           match l with
-          | { base = _; rev_offset = [] } ->
+          | { base = Var _ | VarSpecial _; rev_offset = [] } ->
               `Tainted (Taints.empty, Taints.empty, env.lval_env)
+          | { base = Mem e; rev_offset = [] } ->
+              let taints, lval_env = check_tainted_expr env e in
+              `Tainted (taints, Taints.empty, lval_env)
           | { base = _; rev_offset = _ :: rev_offset' } ->
               loop { l with rev_offset = rev_offset' }
         in
@@ -509,6 +512,18 @@ let check_tainted_lval env (lval0 : IL.lval) : Taints.t * Lval_env.t =
            * accordingly. Otherwise the variable belongs to a piece of code that
            * is a source of taint, but it is not tainted on its own. *)
           List.partition (fun src -> src.overlap > 0.99) source_pms
+        in
+        let taints_offset, lval_env =
+          ignore check_tainted_tok;
+          match l.rev_offset with
+          | [] -> (Taints.empty, lval_env)
+          | offset :: _ -> (
+              match offset.o with
+              | Dot n ->
+                  (* env.config.is_source (G.Tk tok) should be enough here *)
+                  check_tainted_tok { env with lval_env } (snd n.ident)
+              (* (Taints.empty, lval_env) *)
+              | Index e -> check_tainted_expr { env with lval_env } e)
         in
         let taints_sources_reg = reg_source_pms |> taints_of_matches
         and taints_sources_mut = mut_source_pms |> taints_of_matches in
@@ -536,7 +551,9 @@ let check_tainted_lval env (lval0 : IL.lval) : Taints.t * Lval_env.t =
           (Display_IL.string_of_lval l)
           (Lval_env.to_string Taint.show_taints lval_env);
         let taints_from_sources =
-          Taints.union taints_sources_reg taints_sources_mut
+          Taints.union
+            (Taints.union taints_sources_reg taints_sources_mut)
+            taints_offset
           |> filter_taints_by_labels (labels_in_taint taints_from_env)
         in
         logger#flash "check-lval/loop(%s): taint from sources: %s"
@@ -562,8 +579,10 @@ let check_tainted_lval env (lval0 : IL.lval) : Taints.t * Lval_env.t =
           (Display_IL.string_of_lval l)
           (List.length sinks);
         let all_taints = Taints.union taints_from_env taints_incoming in
-        let findings = findings_of_tainted_sinks env all_taints sinks in
-        report_findings env findings;
+        let findings =
+          findings_of_tainted_sinks { env with lval_env } all_taints sinks
+        in
+        report_findings { env with lval_env } findings;
         (* `Tainted(taints_incoming, taints_from_env, lval_env) *)
         match (sub, from_env) with
         | `Sanitized _, _ ->
@@ -596,13 +615,15 @@ let check_tainted_lval env (lval0 : IL.lval) : Taints.t * Lval_env.t =
       logger#flash "check-lval(%s): sink matches: %d"
         (Display_IL.string_of_lval lval0)
         (List.length sinks);
-      let findings = findings_of_tainted_sinks env taints sinks in
-      report_findings env findings;
+      let findings =
+        findings_of_tainted_sinks { env with lval_env } taints sinks
+      in
+      report_findings { env with lval_env } findings;
       (taints, lval_env)
 
 (* Test whether an expression is tainted, and if it is also a sink,
  * report the finding too (by side effect). *)
-let rec check_tainted_expr env exp : Taints.t * Lval_env.t =
+and check_tainted_expr env exp : Taints.t * Lval_env.t =
   logger#flash
     "========================\n\n\ncheck-expr:" (* (IL.show_exp_kind exp.e) *);
   let check env = check_tainted_expr env in
