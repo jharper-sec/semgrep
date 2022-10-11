@@ -515,10 +515,6 @@ let check_tainted_lval env (lval0 : IL.lval) : Taints.t * Lval_env.t =
         logger#flash "check-lval/loop(%s): taint from sources/mut: %s"
           (Display_IL.string_of_lval l)
           (Taint.show_taints taints_sources_mut);
-        let lval_env = Lval_env.add l taints_sources_mut lval_env in
-        logger#flash "check-lval/loop(%s): lval_env.1: %s"
-          (Display_IL.string_of_lval l)
-          (Lval_env.to_string Taint.show_taints lval_env);
         let from_env = Lval_env.find l lval_env in
         let taints_from_env =
           match from_env with
@@ -530,6 +526,15 @@ let check_tainted_lval env (lval0 : IL.lval) : Taints.t * Lval_env.t =
         logger#flash "check-lval/loop(%s): taint from env: %s"
           (Display_IL.string_of_lval l)
           (Taint.show_taints taints_from_env);
+        let lval_env =
+          Lval_env.add l
+            (taints_sources_mut
+            |> filter_taints_by_labels (labels_in_taint taints_from_env))
+            lval_env
+        in
+        logger#flash "check-lval/loop(%s): lval_env.1: %s"
+          (Display_IL.string_of_lval l)
+          (Lval_env.to_string Taint.show_taints lval_env);
         let taints_from_sources =
           Taints.union taints_sources_reg taints_sources_mut
           |> filter_taints_by_labels (labels_in_taint taints_from_env)
